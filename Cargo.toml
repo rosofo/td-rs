@@ -21,6 +21,7 @@ members = [
     "plugins/chop/tdtidal",
     "plugins/chop/wasm",
     "plugins/dat/filter",
+    "plugins/dat/tdtidal",
     "plugins/sop/generator-sop",
     "plugins/top/cpu-memory-top",
     "plugins/top/stable-diffusion",

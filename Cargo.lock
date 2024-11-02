@@ -3653,6 +3653,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "tdtidal-dat"
+version = "0.1.0"
+dependencies = [
+ "pyo3-ffi",
+ "td-rs-dat",
+ "td-rs-derive",
+ "td-rs-derive-py",
+]
+
+[[package]]
 name = "tempfile"
 version = "3.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
