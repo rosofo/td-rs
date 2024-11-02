@@ -18,6 +18,7 @@ members = [
     "plugins/chop/generator",
     "plugins/chop/monome-grid",
     "plugins/chop/python",
+    "plugins/chop/tdtidal",
     "plugins/chop/wasm",
     "plugins/dat/filter",
     "plugins/sop/generator-sop",
