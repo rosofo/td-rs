@@ -1,11 +1,11 @@
 use crate::config::Config;
 use crate::metadata::PluginType;
+use crate::util::ToTitleCase;
 use crate::{build, PLUGIN_HOME};
 use anyhow::Context;
 use fs_extra::dir::CopyOptions;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use crate::util::ToTitleCase;
 
 pub(crate) fn install_plugin(
     config: &Config,
@@ -97,7 +97,9 @@ fn build_xcode(config: &Config, plugin: &str, is_python_enabled: bool) -> anyhow
         })
         .spawn()
         .expect("ls command failed to start");
-    cmd.wait().unwrap();
+    if !cmd.wait()?.success() {
+        anyhow::bail!("Could not build xcode project");
+    }
     Ok(())
 }
 
