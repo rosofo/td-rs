@@ -1,56 +1,80 @@
-use burn::nn::{
-    pool::{AdaptiveAvgPool1d, AdaptiveAvgPool1dConfig},
-    Dropout, DropoutConfig, Linear, LinearConfig, Relu,
+use crate::data::{ChopBatch, NUM_FEATURES};
+use burn::{
+    nn::{
+        loss::{MseLoss, Reduction::Mean},
+        Linear, LinearConfig, Lstm, LstmConfig, Relu,
+    },
+    prelude::*,
+    tensor::backend::AutodiffBackend,
+    train::{RegressionOutput, TrainOutput, TrainStep, ValidStep},
 };
-use burn::prelude::*;
+
 #[derive(Module, Debug)]
-pub struct Model<B: Backend> {
-    pool: AdaptiveAvgPool1d,
-    dropout: Dropout,
-    linear1: Linear<B>,
-    linear2: Linear<B>,
+pub struct RegressionModel<B: Backend> {
+    input_layer: Linear<B>,
+    lstm: Lstm<B>,
+    output_layer: Linear<B>,
     activation: Relu,
 }
-#[derive(Config, Debug)]
-pub struct ModelConfig {
-    num_classes: usize,
-    hidden_size: usize,
-    #[config(default = "0.5")]
-    dropout: f64,
+
+#[derive(Config)]
+pub struct RegressionModelConfig {
+    #[config(default = 64)]
+    pub hidden_size: usize,
+    pub n_features: usize,
+    pub n_targets: usize,
 }
 
-impl ModelConfig {
-    /// Returns the initialized model.
-    pub fn init<B: Backend>(&self, device: &B::Device) -> Model<B> {
-        Model {
-            pool: AdaptiveAvgPool1dConfig::new(8).init(),
+impl RegressionModelConfig {
+    pub fn init<B: Backend>(&self, device: &B::Device) -> RegressionModel<B> {
+        let input_layer = LinearConfig::new(self.n_features, self.hidden_size)
+            .with_bias(true)
+            .init(device);
+        let lstm = LstmConfig::new(self.hidden_size, self.hidden_size, true).init(device);
+        let output_layer = LinearConfig::new(self.hidden_size, self.n_targets)
+            .with_bias(true)
+            .init(device);
+
+        RegressionModel {
+            input_layer,
+            lstm,
+            output_layer,
             activation: Relu::new(),
-            linear1: LinearConfig::new(16 * 8 * 8, self.hidden_size).init(device),
-            linear2: LinearConfig::new(self.hidden_size, self.num_classes).init(device),
-            dropout: DropoutConfig::new(self.dropout).init(),
         }
     }
 }
 
-impl<B: Backend> Model<B> {
-    /// # Shapes
-    ///   - Values [batch_size, sample_size]
-    ///   - Output [batch_size, num_classes]
-    pub fn forward(&self, values: Tensor<B, 2>) -> Tensor<B, 2> {
-        let [batch_size, length] = values.dims();
-
-        // Create a channel at the second dimension.
-        let x = values.reshape([batch_size, 1, length]);
-
-        let x = self.dropout.forward(x);
+impl<B: Backend> RegressionModel<B> {
+    pub fn forward(&self, input: Tensor<B, 2>) -> Tensor<B, 2> {
+        let x = self.input_layer.forward(input);
         let x = self.activation.forward(x);
+        self.output_layer.forward(x)
+    }
 
-        let x = self.pool.forward(x); // [batch_size, 16, 8, 8]
-        let x = x.reshape([batch_size, 16 * 8 * 8]);
-        let x = self.linear1.forward(x);
-        let x = self.dropout.forward(x);
-        let x = self.activation.forward(x);
+    pub fn forward_step(&self, item: ChopBatch<B>) -> RegressionOutput<B> {
+        let targets: Tensor<B, 2> = item.targets.unsqueeze_dim(1);
+        let output: Tensor<B, 2> = self.forward(item.inputs);
 
-        self.linear2.forward(x) // [batch_size, num_classes]
+        let loss = MseLoss::new().forward(output.clone(), targets.clone(), Mean);
+
+        RegressionOutput {
+            loss,
+            output,
+            targets,
+        }
+    }
+}
+
+impl<B: AutodiffBackend> TrainStep<ChopBatch<B>, RegressionOutput<B>> for RegressionModel<B> {
+    fn step(&self, item: ChopBatch<B>) -> TrainOutput<RegressionOutput<B>> {
+        let item = self.forward_step(item);
+
+        TrainOutput::new(self, item.loss.backward(), item)
+    }
+}
+
+impl<B: Backend> ValidStep<ChopBatch<B>, RegressionOutput<B>> for RegressionModel<B> {
+    fn step(&self, item: ChopBatch<B>) -> RegressionOutput<B> {
+        self.forward_step(item)
     }
 }

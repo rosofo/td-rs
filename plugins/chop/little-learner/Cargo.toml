@@ -8,10 +8,14 @@ type = "chop"
 
 [lib]
 name = "little_learner_chop"
-crate-type = ["staticlib"]
+crate-type = ["lib", "staticlib"]
 
 [dependencies]
 burn = { version = "0.15.0", features = ["train", "wgpu"] }
+serde = "1.0.214"
 td-rs-chop = { path = "../../../td-rs-chop", features = ["tracing"] }
 td-rs-derive = { path = "../../../td-rs-derive" }
 tracing = "0.1"
+
+[dev-dependencies]
+proptest = "1.5.0"

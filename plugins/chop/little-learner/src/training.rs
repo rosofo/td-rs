@@ -1,62 +1,40 @@
+use std::fmt::Debug;
+
+use crate::data::{ChopBatcher, ChopItem};
+use crate::model::{RegressionModel, RegressionModelConfig};
+use burn::config;
+use burn::optim::AdamConfig;
+use burn::train::renderer::{MetricState, MetricsRenderer, TrainingProgress};
+use burn::train::Learner;
 use burn::{
-    optim::AdamConfig,
+    data::{dataloader::DataLoaderBuilder, dataset::Dataset, dataset::InMemDataset},
     prelude::*,
-    record::CompactRecorder,
+    record::{CompactRecorder, NoStdTrainingRecorder},
     tensor::backend::AutodiffBackend,
-    train::{
-        metric::{AccuracyMetric, LossMetric},
-        ClassificationOutput, LearnerBuilder, TrainOutput, TrainStep, ValidStep,
-    },
+    train::{metric::LossMetric, LearnerBuilder},
 };
-use nn::loss::CrossEntropyLossConfig;
-
-use crate::{
-    data::{ChopBatch, ChopBatcher},
-    model::{Model, ModelConfig},
-};
-impl<B: Backend> Model<B> {
-    pub fn forward_classification(
-        &self,
-        values: Tensor<B, 2>,
-        targets: Tensor<B, 1, Int>,
-    ) -> ClassificationOutput<B> {
-        let output = self.forward(values);
-        let loss = CrossEntropyLossConfig::new()
-            .init(&output.device())
-            .forward(output.clone(), targets.clone());
-
-        ClassificationOutput::new(loss, output, targets)
-    }
-}
-
-impl<B: AutodiffBackend> TrainStep<ChopBatch<B>, ClassificationOutput<B>> for Model<B> {
-    fn step(&self, batch: ChopBatch<B>) -> TrainOutput<ClassificationOutput<B>> {
-        let item = self.forward_classification(batch.values, batch.targets);
-
-        TrainOutput::new(self, item.loss.backward(), item)
-    }
-}
-
-impl<B: Backend> ValidStep<ChopBatch<B>, ClassificationOutput<B>> for Model<B> {
-    fn step(&self, batch: ChopBatch<B>) -> ClassificationOutput<B> {
-        self.forward_classification(batch.values, batch.targets)
-    }
-}
 
 #[derive(Config)]
-pub struct TrainingConfig {
-    pub model: ModelConfig,
-    pub optimizer: AdamConfig,
-    #[config(default = 10)]
+pub struct ExpConfig {
+    #[config(default = 100)]
     pub num_epochs: usize,
-    #[config(default = 64)]
-    pub batch_size: usize,
-    #[config(default = 4)]
+
+    #[config(default = 2)]
     pub num_workers: usize,
-    #[config(default = 42)]
+
+    #[config(default = 1337)]
     pub seed: u64,
-    #[config(default = 1.0e-4)]
-    pub learning_rate: f64,
+
+    pub optimizer: AdamConfig,
+
+    #[config(default = 256)]
+    pub batch_size: usize,
+}
+
+impl Debug for ExpConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ExpConfig")
+    }
 }
 
 fn create_artifact_dir(artifact_dir: &str) {
@@ -65,35 +43,66 @@ fn create_artifact_dir(artifact_dir: &str) {
     std::fs::create_dir_all(artifact_dir).ok();
 }
 
-pub fn train<B: AutodiffBackend>(artifact_dir: &str, config: TrainingConfig, device: B::Device) {
-    create_artifact_dir(artifact_dir);
-    config
-        .save(format!("{artifact_dir}/config.json"))
-        .expect("Config should be saved successfully");
+struct ChopRenderer;
 
+impl MetricsRenderer for ChopRenderer {
+    fn update_train(&mut self, _state: MetricState) {}
+
+    fn update_valid(&mut self, _state: MetricState) {}
+
+    fn render_train(&mut self, item: TrainingProgress) {}
+
+    fn render_valid(&mut self, item: TrainingProgress) {}
+}
+
+pub fn create_model<B: AutodiffBackend>(
+    artifact_dir: &str,
+    device: B::Device,
+) -> RegressionModel<B> {
+    create_artifact_dir(artifact_dir);
+
+    // Config
+    RegressionModelConfig::new(8, 8).init(&device)
+}
+
+pub fn train<B: AutodiffBackend>(
+    device: B::Device,
+    model: RegressionModel<B>,
+    train_dataset: InMemDataset<ChopItem>,
+    valid_dataset: InMemDataset<ChopItem>,
+) -> RegressionModel<B> {
+    create_artifact_dir("artifacts");
+    let optimizer = AdamConfig::new();
+    let config = ExpConfig::new(optimizer);
     B::seed(config.seed);
 
-    let batcher_train = ChopBatcher::<B>::new(device.clone());
-    let batcher_valid = ChopBatcher::<B::InnerBackend>::new(device.clone());
+    println!("Train Dataset Size: {}", train_dataset.len());
+    println!("Valid Dataset Size: {}", valid_dataset.len());
 
-    let learner = LearnerBuilder::new(artifact_dir)
-        .metric_train_numeric(AccuracyMetric::new())
-        .metric_valid_numeric(AccuracyMetric::new())
+    let batcher_train = ChopBatcher::<B>::new(device.clone());
+
+    let batcher_test = ChopBatcher::<B::InnerBackend>::new(device.clone());
+
+    let dataloader_train = DataLoaderBuilder::new(batcher_train)
+        .batch_size(config.batch_size)
+        .shuffle(config.seed)
+        .num_workers(config.num_workers)
+        .build(train_dataset);
+
+    let dataloader_test = DataLoaderBuilder::new(batcher_test)
+        .batch_size(config.batch_size)
+        .shuffle(config.seed)
+        .num_workers(config.num_workers)
+        .build(valid_dataset);
+    let learner = LearnerBuilder::new("artifacts")
         .metric_train_numeric(LossMetric::new())
         .metric_valid_numeric(LossMetric::new())
-        .with_file_checkpointer(CompactRecorder::new())
+        // .with_file_checkpointer(CompactRecorder::new())
         .devices(vec![device.clone()])
         .num_epochs(config.num_epochs)
-        .summary()
-        .build(
-            config.model.init::<B>(&device),
-            config.optimizer.init(),
-            config.learning_rate,
-        );
+        .renderer(ChopRenderer)
+        .build(model, config.optimizer.init(), 1e-3);
 
     let model_trained = learner.fit(dataloader_train, dataloader_test);
-
     model_trained
-        .save_file(format!("{artifact_dir}/model"), &CompactRecorder::new())
-        .expect("Trained model should be saved successfully");
 }
